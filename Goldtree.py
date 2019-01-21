@@ -29,8 +29,7 @@ class CommandId:
     NSPData=4
     NSPContent=5
     NSPTicket=6
-    NSPCert=7
-    Finish=8
+    Finish=7
 
 class Command:
     GLUC=0x43554c47
@@ -85,7 +84,6 @@ def main():
                     write(bytes(c))
                     write(struct.pack("=I",len(pnsp.files)))
                     tik_idx=-1
-                    cert_idx=-1
                     tmp_idx=0
                     for file in pnsp.files:
                         write(struct.pack("=I",len(file.name)))
@@ -94,8 +92,6 @@ def main():
                         write(struct.pack("=Q",file.file_size))
                         if os.path.splitext(file.name)[1][1:].lower()=="tik":
                             tik_idx=tmp_idx
-                        elif os.path.splitext(file.name)[1][1:].lower()=="cert":
-                            cert_idx=tmp_idx
                         tmp_idx+=1
                     while True:
                         c=Command(raw=read(8))
@@ -109,9 +105,6 @@ def main():
                             elif c.has_id(CommandId.NSPTicket):
                                 print("Sending ticket file...")
                                 write(pnsp.read_file(tik_idx))
-                            elif c.has_id(CommandId.NSPCert):
-                                print("Sending certificate file...")
-                                write(pnsp.read_file(cert_idx))
                             elif c.has_id(CommandId.Finish):
                                 break
                         else:
