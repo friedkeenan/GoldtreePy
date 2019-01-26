@@ -48,9 +48,9 @@ class Command:
 
 dev=get_switch()
 ep=get_ep(dev)
-def write(buffer,timeout=None):
+def write(buffer,timeout=3000):
     ep[0].write(buffer,timeout=timeout)
-def read(length,timeout=None):
+def read(length,timeout=3000):
     return ep[1].read(length,timeout=timeout).tobytes()
 
 invalid_cmd="An invalid command was received. Are you sure Goldleaf is active?"
