@@ -3,16 +3,16 @@ import struct
 class PFS0:
     class FileEntry:
         def __init__(self,data):
-            self.file_offset=struct.unpack("=Q",data[:0x8])[0]
-            self.file_size=struct.unpack("=Q",data[0x8:0x10])[0]
-            self.name_offset=struct.unpack("=I",data[0x10:0x14])[0]
+            self.file_offset=struct.unpack("<Q",data[:0x8])[0]
+            self.file_size=struct.unpack("<Q",data[0x8:0x10])[0]
+            self.name_offset=struct.unpack("<I",data[0x10:0x14])[0]
             self.name=None
     def __init__(self,filename):
         self.f=open(filename,"rb")
         if self.read_raw(0x0,0x4)!=b"PFS0":
             raise ValueError("File is not a PFS0")
-        num_files=struct.unpack("=I",self.read_raw(0x4,0x4))[0]
-        len_strings=struct.unpack("=I",self.read_raw(0x8,0x4))[0]
+        num_files=struct.unpack("<I",self.read_raw(0x4,0x4))[0]
+        len_strings=struct.unpack("<I",self.read_raw(0x8,0x4))[0]
         self.files=[PFS0.FileEntry(self.read_raw(0x10+0x18*x,0x18)) for x in range(num_files)]
         self.header_size=0x10+0x18*num_files
         file_names=self.read_raw(self.header_size,len_strings).split(b"\0")[:num_files]

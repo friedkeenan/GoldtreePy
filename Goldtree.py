@@ -32,19 +32,26 @@ class CommandId:
     Finish=7
 
 class Command:
-    GLUC=0x43554c47
+    GLUC=b"GLUC"
     def __init__(self,cmd_id=0,raw=None):
         if raw is None:
             self.cmd_id=cmd_id
             self.magic=self.GLUC
         else:
-            self.magic,self.cmd_id=struct.unpack("=II",raw)
+            self.magic=raw[:4]
+            self.cmd_id=struct.unpack("<I",raw[4:])[0]
     def magic_ok(self):
         return self.magic==self.GLUC
     def has_id(self,cmd_id):
         return self.cmd_id==cmd_id
     def __bytes__(self):
-        return struct.pack("=II",self.magic,self.cmd_id)
+        return self.magic+struct.pack("<I",self.cmd_id)
+    def write(self):
+        write(self.magic)
+        write(struct.pack("<I",self.cmd_id))
+    @staticmethod
+    def read():
+        return Command(raw=read(4)+read(4))
 
 dev=get_switch()
 ep=get_ep(dev)
@@ -58,22 +65,21 @@ install_cancelled="Goldleaf has canceled the installation."
 
 def main():
     c=Command()
-    write(bytes(c))
-    c=Command(raw=read(8))
+    c.write()
+    c=Command.read()
     if c.magic_ok():
         if c.has_id(CommandId.ConnectionResponse):
             print("Connection was established with Goldleaf.")
             c=Command(CommandId.NSPName)
-            write(bytes(c))
+            c.write()
             base_name=os.path.basename(sys.argv[1])
-            write(struct.pack("=I",len(base_name)))
+            write(struct.pack("<I",len(base_name)))
             write(base_name.encode())
             print("NSP name sent to Goldleaf")
-            resp=None
-            while resp is None:
+            while True:
                 try:
-                    resp=read(8)
-                    c=Command(raw=resp)
+                    c=Command.read()
+                    break
                 except usb.core.USBError:
                     pass
             if c.magic_ok():
@@ -81,23 +87,23 @@ def main():
                     print("Goldleaf is ready for the installation. Preparing everything...")
                     pnsp=PFS0(sys.argv[1])
                     c=Command(CommandId.NSPData)
-                    write(bytes(c))
-                    write(struct.pack("=I",len(pnsp.files)))
+                    c.write()
+                    write(struct.pack("<I",len(pnsp.files)))
                     tik_idx=-1
                     tmp_idx=0
                     for file in pnsp.files:
-                        write(struct.pack("=I",len(file.name)))
+                        write(struct.pack("<I",len(file.name)))
                         write(file.name.encode())
-                        write(struct.pack("=Q",pnsp.header_size+file.file_offset))
-                        write(struct.pack("=Q",file.file_size))
+                        write(struct.pack("<Q",pnsp.header_size+file.file_offset))
+                        write(struct.pack("<Q",file.file_size))
                         if os.path.splitext(file.name)[1][1:].lower()=="tik":
                             tik_idx=tmp_idx
                         tmp_idx+=1
                     while True:
-                        c=Command(raw=read(8))
+                        c=Command.read()
                         if c.magic_ok():
                             if c.has_id(CommandId.NSPContent):
-                                idx=struct.unpack("=I",read(4))[0]
+                                idx=struct.unpack("<I",read(4))[0]
                                 print("Sending content '"+pnsp.files[idx].name+"'... ("+str(idx+1)+" of "+str(len(pnsp.files))+")")
                                 for buf in pnsp.read_chunks(idx):
                                     write(buf)
