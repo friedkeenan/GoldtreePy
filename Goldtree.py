@@ -126,7 +126,9 @@ def main():
                         drives[letter] = letter + ":"
                     bitmask >>= 1
             for d in sys.argv[1:]:
-                folder = os.path.dirname(os.path.abspath(d))
+                folder = os.path.abspath(d)
+                if os.path.isfile(folder):
+                    folder = os.path.dirname(folder)
                 drives[os.path.basename(folder)] = folder
             print(drives)
             write_u32(len(drives))
