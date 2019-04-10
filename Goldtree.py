@@ -8,11 +8,14 @@ import os
 
 from PFS0 import PFS0
 
+
 def get_switch():
     dev = usb.core.find(idVendor=0x057e, idProduct=0x3000)
     if dev is None:
         raise ValueError("Device not found")
     return dev
+
+
 def get_ep(dev):
     dev.set_configuration()
     intf = dev.get_active_configuration()[(0,0)]
@@ -20,6 +23,7 @@ def get_ep(dev):
             custom_match=lambda e:usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT),
             usb.util.find_descriptor(intf,
             custom_match= lambda e:usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN))
+
 
 class CommandId:
     ConnectionRequest = 0
@@ -31,8 +35,10 @@ class CommandId:
     NSPTicket = 6
     Finish = 7
 
+
 class Command:
     GLUC = b"GLUC"
+
     def __init__(self,cmd_id=0,raw=None):
         if raw is None:
             self.cmd_id = cmd_id
@@ -53,15 +59,22 @@ class Command:
     def read():
         return Command(raw=read(4)+read(4))
 
+
 dev = get_switch()
 ep = get_ep(dev)
+
+
 def write(buffer,timeout=3000):
     ep[0].write(buffer,timeout=timeout)
+
+
 def read(length,timeout=3000):
     return ep[1].read(length,timeout=timeout).tobytes()
 
+
 invalid_cmd = "An invalid command was received. Are you sure Goldleaf is active?"
 install_cancelled = "Goldleaf has canceled the installation."
+
 
 def main():
     c = Command()
@@ -136,6 +149,7 @@ def main():
     #c=Command(CommandId.Finish)
     #write(bytes(c))
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
