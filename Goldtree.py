@@ -46,15 +46,20 @@ class Command:
         else:
             self.magic = raw[:4]
             self.cmd_id = struct.unpack("<I", raw[4:])[0]
+
     def magic_ok(self):
         return self.magic == self.GLUC
+
     def has_id(self, cmd_id):
         return self.cmd_id == cmd_id
+
     def __bytes__(self):
         return self.magic+struct.pack("<I", self.cmd_id)
+
     def write(self):
         write(self.magic)
         write(struct.pack("<I", self.cmd_id))
+
     @staticmethod
     def read():
         return Command(raw=read(4)+read(4))
