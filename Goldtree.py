@@ -117,7 +117,11 @@ def main():
                         if c.magic_ok():
                             if c.has_id(CommandId.NSPContent):
                                 idx = struct.unpack("<I", read(4))[0]
-                                print("Sending content '" + pnsp.files[idx].name + "'... (" + str(idx + 1) + " of " + str(len(pnsp.files)) + ")")
+                                print("Sending content '{0}'... ({1} of {2})"
+                                      .format(pnsp.files[idx].name,
+                                              str(idx + 1),
+                                              str(len(pnsp.files))
+                                              ))
                                 for buf in pnsp.read_chunks(idx):
                                     write(buf)
                                 print("Content was sent to Goldleaf.")
