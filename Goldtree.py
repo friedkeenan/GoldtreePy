@@ -123,6 +123,8 @@ def main():
                 break
             except usb.core.USBError:
                 pass
+            except KeyboardInterrupt:
+                return 0
         if c.has_id(CommandId.ListSystemDrives):
             if "win" not in sys.platform:
                 drives["ROOT"] = "/"
@@ -134,22 +136,25 @@ def main():
                     if bitmask & 1:
                         drives[letter] = letter + ":/"
                     bitmask >>= 1
-            for d in sys.argv[1:]:
-                folder = os.path.abspath(d)
-                if os.path.isfile(folder):
-                    folder = os.path.dirname(folder)
-                drives[os.path.basename(folder)] = folder + "/"
             write_u32(len(drives))
             for d in drives:
                 write_string(d)
                 write_string(d)
-        elif c.has_id(CommandId.GetEnvironmentPaths): # Currently broken
+        elif c.has_id(CommandId.GetEnvironmentPaths):
             env_paths = {x:os.path.expanduser("~/"+x) for x in ["Desktop", "Documents"]}
+
+            for arg in sys.argv[1:]: # Add arguments as environment paths
+                folder = os.path.abspath(arg)
+                if os.path.isfile(folder):
+                    folder = os.path.dirname(folder)
+                env_paths[os.path.basename(folder)] = folder
+
             write_u32(len(env_paths))
             for env in env_paths:
                 write_string(env)
+                if ":/" not in env_paths[env]:
+                    env_paths[env] = "ROOT:" + env_paths[env]
                 write_string(env_paths[env])
-                print(env, env_paths[env])
         elif c.has_id(CommandId.GetPathType):
             ptype = 0
             path = read_path()
