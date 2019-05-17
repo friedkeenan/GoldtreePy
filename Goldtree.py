@@ -16,14 +16,14 @@ def get_switch():
 
 def get_ep(dev):
     dev.set_configuration()
-    intf=dev.get_active_configuration()[(0,0)]
+    intf = dev.get_active_configuration()[(0,0)]
     return (usb.util.find_descriptor(intf,
                 custom_match=lambda e:usb.util.endpoint_direction(e.bEndpointAddress)==usb.util.ENDPOINT_OUT),
             usb.util.find_descriptor(intf,
                 custom_match=lambda e:usb.util.endpoint_direction(e.bEndpointAddress)==usb.util.ENDPOINT_IN))
 
-dev=get_switch()
-ep=get_ep(dev)
+dev = get_switch()
+ep = get_ep(dev)
 
 def write(buffer, timeout=3000):
     ep[0].write(buffer, timeout=timeout)
@@ -50,59 +50,69 @@ def read_u64():
 def read_string():
     return read(read_u32() + 1)[:-1].decode()
 
+class CommandReadResult: # Currently not used in this code, but used in original Goldtree
+    Success = 0
+    InvalidMagic = 1
+    InvalidCommandId = 2
 
 class CommandId:
     ListSystemDrives = 0
-    GetPathType = 1
-    ListDirectories = 2
-    ListFiles = 3
-    GetFileSize = 4
-    FileRead = 5
-    FileWrite = 6
-    CreateFile = 7
-    CreateDirectory = 8
-    DeleteFile = 9
-    DeleteDirectory = 10
-    RenameFile = 11
-    RenameDirectory = 12
-    GetDriveTotalSpace = 13
-    GetDriveFreeSpace = 14
-    GetNSPContents = 15
+    GetEnvironmentPaths = 1
+    GetPathType = 2
+    ListDirectories = 3
+    ListFiles = 4
+    GetFileSize = 5
+    FileRead = 6
+    FileWrite = 7
+    CreateFile = 8
+    CreateDirectory = 9
+    DeleteFile = 10
+    DeleteDirectory = 12
+    RenameFile = 13
+    RenameDirectory = 13
+    GetDriveTotalSpace = 14
+    GetDriveFreeSpace = 15
+    GetNSPContents = 16
+    Max = 17
 
 class Command:
-    GUCI = b"GUCI"
-    GUCO = b"GUCO"
-    def __init__(self, cmd_id=0, out=True, raw=None):
-        self.out = out
-        if raw is None:
+
+    GLUC = b"GLUC"
+
+    def __init__(self, cmd_id=0, out=True):
+        if out:
             self.cmd_id = cmd_id
-            if out:
-                self.magic = self.GUCO
-            else:
-                self.magic = self.GUCI
+            self.magic = self.GLUC
         else:
-            self.magic = raw[:4]
-            self.cmd_id = struct.unpack("<I", raw[4:])[0]
+            while True:
+                self.magic = read(4)
+                if self.magic_ok():
+                    break
+            self.cmd_id = read_u32()
+
     def magic_ok(self):
-        if self.out:
-            return self.magic == self.GUCO
-        else:
-            return self.magic == self.GUCI
+        return self.magic == self.GLUC
+
     def has_id(self,cmd_id):
         return self.cmd_id == cmd_id
+
     def write(self):
         write(self.magic)
         write_u32(self.cmd_id)
+
     @staticmethod
     def read():
-        return Command(out=False, raw=read(4) + read(4))
+        return Command(out=False)
 
 drives = {}
 
 def read_path():
     path = read_string()
     drive = path.split(":", 1)[0]
-    path = path.replace(drive + ":", drives[drive])
+    try:
+        path = path.replace(drive + ":", drives[drive])
+    except KeyError:
+        pass
     return path
 
 def main():
@@ -130,11 +140,17 @@ def main():
                 if os.path.isfile(folder):
                     folder = os.path.dirname(folder)
                 drives[os.path.basename(folder)] = folder
-            print(drives)
             write_u32(len(drives))
             for d in drives:
                 write_string(d)
                 write_string(d)
+        elif c.has_id(CommandId.GetEnvironmentPaths): # Currently broken
+            env_paths = {x:os.path.expanduser("~/"+x) for x in ["Desktop", "Documents"]}
+            write_u32(len(env_paths))
+            for env in env_paths:
+                write_string(env)
+                write_string(env_paths[env])
+                print(env, env_paths[env])
         elif c.has_id(CommandId.GetPathType):
             ptype = 0
             path = read_path()
@@ -162,20 +178,16 @@ def main():
             offset = read_u64()
             size = read_u64()
             path = read_path()
-            print(f"FileRead - Path: {path}, Offset: {offset}, Size: {size}")
             with open(path, "rb") as f:
                 f.seek(offset)
                 data = f.read(size)
             write_u64(len(data))
-            print(f"FileRead - Read bytes: {len(data)}")
             write(data)
         elif c.has_id(CommandId.FileWrite):
             path = read_path()
-            read_u32() # Hardcoded to zero
-            offset = read_u32()
-            size = read_u32()
+            offset = read_u64()
+            size = read_u64()
             data = read(size)
-            print(f"FileWrite - Path: ({path}), Offset: {offset}, Size: {size}")
             with open(path, "rwb") as f:
                 cont=bytearray(f.read())
                 cont[offset:offset + size] = data
