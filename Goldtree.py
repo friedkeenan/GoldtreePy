@@ -110,7 +110,7 @@ def read_path():
     path = read_string()
     drive = path.split(":", 1)[0]
     try:
-        path = path.replace(drive + ":", drives[drive])
+        path = path.replace(drive + ":/", drives[drive])
     except KeyError:
         pass
     return path
@@ -132,14 +132,13 @@ def main():
                 bitmask = windll.kernel32.GetLogicalDrives()
                 for letter in string.ascii_uppercase:
                     if bitmask & 1:
-                        print(letter)
-                        drives[letter] = letter + ":"
+                        drives[letter] = letter + ":/"
                     bitmask >>= 1
             for d in sys.argv[1:]:
                 folder = os.path.abspath(d)
                 if os.path.isfile(folder):
                     folder = os.path.dirname(folder)
-                drives[os.path.basename(folder)] = folder
+                drives[os.path.basename(folder)] = folder + "/"
             write_u32(len(drives))
             for d in drives:
                 write_string(d)
