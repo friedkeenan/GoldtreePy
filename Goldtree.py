@@ -207,13 +207,18 @@ def main():
             write_u64(len(data))
             write(data)
         elif c.has_id(CommandId.FileWrite):
-            path = read_path()
             offset = read_u64()
             size = read_u64()
+            path = read_path()
             data = read(size)
-            with open(path, "rwb") as f:
-                cont=bytearray(f.read())
-                cont[offset:offset + size] = data
+            cont = bytearray()
+            try:
+                with open(path, "rb") as f:
+                    cont=bytearray(f.read())
+            except FileNotFoundError:
+                pass
+            cont[offset:offset + size] = data
+            with open(path, "wb") as f:
                 f.write(cont)
         elif c.has_id(CommandId.CreateFile):
             path = read_path()
@@ -222,7 +227,7 @@ def main():
             path = read_path()
             try:
                 os.mkdir(path)
-            except os.FileExistsError:
+            except FileExistsError:
                 pass
         elif c.has_id(CommandId.DeleteFile):
             path = read_path()
