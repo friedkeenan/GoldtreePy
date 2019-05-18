@@ -67,8 +67,8 @@ class CommandId:
     CreateFile = 8
     CreateDirectory = 9
     DeleteFile = 10
-    DeleteDirectory = 12
-    RenameFile = 13
+    DeleteDirectory = 11
+    RenameFile = 12
     RenameDirectory = 13
     GetDriveTotalSpace = 14
     GetDriveFreeSpace = 15
@@ -235,9 +235,13 @@ def main():
         elif c.has_id(CommandId.DeleteDirectory):
             path = read_path()
             shutil.rmtree(path)
-        elif c.has_id(CommandId.RenameFile) or c.has_id(CommandId.RenameDirectory):
+        elif c.has_id(CommandId.RenameFile):
             path = read_path()
             new_name = read_string()
+            os.rename(path, f"{os.path.dirname(path)}/{new_name}")
+        elif c.has_id(CommandId.RenameDirectory):
+            path = read_path()
+            new_name = read_path()
             os.rename(path, new_name)
         elif c.has_id(CommandId.GetDriveTotalSpace):
             path = read_path()
