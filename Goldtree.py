@@ -183,8 +183,8 @@ def main():
                 ptype = 2
             write_u32(ptype)
         elif c.has_id(CommandId.ListDirectories):
-            path=read_path()
-            ents=[x for x in os.listdir(path) if os.path.isdir(os.path.join(path, x))]
+            path = read_path()
+            ents = [x for x in os.listdir(path) if os.path.isdir(os.path.join(path, x))]
             write_u32(len(ents))
             for name in ents:
                 write_string(name)
@@ -211,12 +211,11 @@ def main():
             size = read_u64()
             path = read_path()
             data = read(size)
-            cont = bytearray()
             try:
                 with open(path, "rb") as f:
-                    cont=bytearray(f.read())
+                    cont = bytearray(f.read())
             except FileNotFoundError:
-                pass
+                cont = bytearray()
             cont[offset:offset + size] = data
             with open(path, "wb") as f:
                 f.write(cont)
