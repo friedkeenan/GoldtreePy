@@ -126,19 +126,37 @@ def main():
             except KeyboardInterrupt:
                 return 0
         if c.has_id(CommandId.ListSystemDrives):
+            drive_labels = {}
             if "win" not in sys.platform:
                 drives["ROOT"] = "/"
             else:
                 import string
-                from ctypes import windll
-                bitmask = windll.kernel32.GetLogicalDrives()
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                bitmask = kernel32.GetLogicalDrives()
                 for letter in string.ascii_uppercase:
                     if bitmask & 1:
                         drives[letter] = letter + ":/"
+                        label_buf = ctypes.create_unicode_buffer(1024)
+                        kernel32.GetVolumeInformationW(
+                            ctypes.c_wchar_p(letter + ":\\"),
+                            label_buf,
+                            ctypes.sizeof(label_buf),
+                            None,
+                            None,
+                            None,
+                            None,
+                            0
+                            )
+                        if label_buf.value:
+                            drive_labels[letter] = label_buf.value
                     bitmask >>= 1
             write_u32(len(drives))
             for d in drives:
-                write_string(d)
+                try:
+                    write_string(drive_labels[d])
+                except KeyError:
+                    write_string(d)
                 write_string(d)
         elif c.has_id(CommandId.GetEnvironmentPaths):
             env_paths = {x:os.path.expanduser("~/"+x) for x in ["Desktop", "Documents"]}
@@ -151,8 +169,9 @@ def main():
 
             write_u32(len(env_paths))
             for env in env_paths:
+                env_paths[env] = env_paths[env].replace("\\", "/")
                 write_string(env)
-                if ":/" not in env_paths[env]:
+                if env_paths[env][1:3] != ":/":
                     env_paths[env] = "ROOT:" + env_paths[env]
                 write_string(env_paths[env])
         elif c.has_id(CommandId.GetPathType):
