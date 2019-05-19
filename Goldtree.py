@@ -150,7 +150,7 @@ def main():
                             drive_labels[letter] = label_buf.value
                     bitmask >>= 1
             else:
-                Goldleaf.drives["ROOT"] = "/"
+                drives["ROOT"] = "/"
             write_u32(len(drives))
             for d in drives:
                 try:
