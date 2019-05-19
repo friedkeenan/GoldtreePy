@@ -127,9 +127,7 @@ def main():
                 return 0
         if c.has_id(CommandId.ListSystemDrives):
             drive_labels = {}
-            if "win" not in sys.platform:
-                drives["ROOT"] = "/"
-            else:
+            if "win" in value[:3].lower():
                 import string
                 import ctypes
                 kernel32 = ctypes.windll.kernel32
@@ -151,6 +149,8 @@ def main():
                         if label_buf.value:
                             drive_labels[letter] = label_buf.value
                     bitmask >>= 1
+            else:
+                drives["ROOT"] = "/"
             write_u32(len(drives))
             for d in drives:
                 try:
