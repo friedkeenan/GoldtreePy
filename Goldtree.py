@@ -127,7 +127,7 @@ def main():
                 return 0
         if c.has_id(CommandId.ListSystemDrives):
             drive_labels = {}
-            if "win" in value[:3].lower():
+            if "win" in sys.platform[:3].lower():
                 import string
                 import ctypes
                 kernel32 = ctypes.windll.kernel32
