@@ -127,7 +127,7 @@ def main():
                 return 0
         if c.has_id(CommandId.ListSystemDrives):
             drive_labels = {}
-            if "win" not in sys.platform:
+            if "linux" in sys.platform or "darwin" in sys.platform or "freebsd" in sys.platform or "openbsd" in sys.platform:
                 drives["ROOT"] = "/"
             else:
                 import string
