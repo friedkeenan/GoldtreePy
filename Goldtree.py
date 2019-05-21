@@ -167,6 +167,8 @@ def main():
                     folder = os.path.dirname(folder)
                 env_paths[os.path.basename(folder)] = folder
 
+            env_paths = {x:env_paths[x] for x in env_paths if os.path.exists(env_paths[x])}
+
             write_u32(len(env_paths))
             for env in env_paths:
                 env_paths[env] = env_paths[env].replace("\\", "/")
