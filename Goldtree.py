@@ -6,7 +6,6 @@ import struct
 import sys
 import os
 import shutil
-import psutil
 
 def get_switch():
     dev = usb.core.find(idVendor=0x057e, idProduct=0x3000)
@@ -246,10 +245,10 @@ def main():
             os.rename(path, new_name)
         elif c.has_id(CommandId.GetDriveTotalSpace):
             path = read_path()
-            write_u64(psutil.disk_usage(path).total)
+            write_u64(shutil.disk_usage(path).total)
         elif c.has_id(CommandId.GetDriveFreeSpace):
             path = read_path()
-            write_u64(psutil.disk_usage(path).free)
+            write_u64(shutil.disk_usage(path).free)
 
     return 0
 
