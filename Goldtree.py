@@ -6,249 +6,425 @@ import struct
 import sys
 import os
 import shutil
+import io
+from enum import Enum
+from pathlib import Path
+from collections import OrderedDict
 
-def get_switch():
-    dev = usb.core.find(idVendor=0x057e, idProduct=0x3000)
-    if dev is None:
-        raise ValueError("Device not found")
-    return dev
+class USBHandler:
+    CommandBlockLength = 0x2000
 
-def get_ep(dev):
-    dev.set_configuration()
-    intf = dev.get_active_configuration()[(0,0)]
-    return (usb.util.find_descriptor(intf,
-                custom_match=lambda e:usb.util.endpoint_direction(e.bEndpointAddress)==usb.util.ENDPOINT_OUT),
-            usb.util.find_descriptor(intf,
-                custom_match=lambda e:usb.util.endpoint_direction(e.bEndpointAddress)==usb.util.ENDPOINT_IN))
+    def __init__(self, idVendor=0x057e, idProduct=0x3000):
+        super().__init__()
 
-dev = get_switch()
-ep = get_ep(dev)
+        self.dev = usb.core.find(idVendor=idVendor, idProduct=idProduct)
+        if self.dev is None:
+            raise ValueError("Device not found")
 
-def write(buffer, timeout=3000):
-    ep[0].write(buffer, timeout=timeout)
+        self.ep = self.get_ep()
 
-def read(length, timeout=3000):
-    return ep[1].read(length, timeout=timeout).tobytes()
+        self.read_buf = io.BytesIO()
+        self.write_buf = io.BytesIO()
 
-def write_u32(x):
-    write(struct.pack("<I", x))
+        self.drives = OrderedDict()
 
-def write_u64(x):
-    write(struct.pack("<Q", x))
+    def get_ep(self):
+        self.dev.set_configuration()
+        intf = self.dev.get_active_configuration()[(0,0)]
+        return (usb.util.find_descriptor(intf,
+                    custom_match=lambda e:usb.util.endpoint_direction(e.bEndpointAddress)==usb.util.ENDPOINT_OUT),
+                usb.util.find_descriptor(intf,
+                    custom_match=lambda e:usb.util.endpoint_direction(e.bEndpointAddress)==usb.util.ENDPOINT_IN))
 
-def write_string(x):
-    write_u32(len(x))
-    write(x.encode())
+    def clear(self):
+        self.read_buf = io.BytesIO()
+        self.write_buf = io.BytesIO()
 
-def read_u32():
-    return struct.unpack("<I", read(4))[0]
+    def read(self, size=-1):
+        if size == str:
+            length = self.read("I")
+            return self.read(length).decode().replace("\x00", "")
 
-def read_u64():
-    return struct.unpack("<Q", read(8))[0]
+        elif size == Path:
+            path = self.read(str)
+            drive = path.split(":", 1)[0]
+            try:
+                path = path.replace(drive + ":/", str(self.drives[drive][0]))
+            except KeyError:
+                pass
+            return Path(path)
 
-def read_string():
-    return read(read_u32() + 1)[:-1].decode()
+        elif isinstance(size, str):
+            fmt = size
+            size = struct.calcsize(fmt)
 
-class CommandReadResult: # Currently not used in this code, but used in original Goldtree
-    Success = 0
-    InvalidMagic = 1
-    InvalidCommandId = 2
+        else:
+            fmt = None
 
-class CommandId:
-    ListSystemDrives = 0
-    GetEnvironmentPaths = 1
-    GetPathType = 2
-    ListDirectories = 3
-    ListFiles = 4
-    GetFileSize = 5
-    FileRead = 6
-    FileWrite = 7
-    CreateFile = 8
-    CreateDirectory = 9
-    DeleteFile = 10
-    DeleteDirectory = 11
-    RenameFile = 12
-    RenameDirectory = 13
-    GetDriveTotalSpace = 14
-    GetDriveFreeSpace = 15
-    GetNSPContents = 16
-    Max = 17
+        pos = self.read_buf.tell()
+        ret = self.read_buf.read(size)
+
+        if size == -1:
+            pass
+        elif self.read_buf.read(1) != b"":
+            self.read_buf.seek(-1, 1)
+            pass
+        else:
+            length = self.read_buf.tell()
+
+            self.read_buf = io.BytesIO(self.read_raw(self.CommandBlockLength))
+
+            ret += self.read_buf.read(size - length + pos)
+
+        if fmt is not None:
+            ret = struct.unpack(f"<{fmt}", ret)
+            if len(ret) == 1:
+                ret = ret[0]
+
+        return ret
+
+    def write(self, fmt=None, *args):
+        if fmt is None:
+            return
+
+        if len(args) < 1:
+            if isinstance(fmt, str):
+                self.write("I", len(fmt) + 1)
+                self.write(fmt.encode() + b"\x00")
+
+            elif isinstance(fmt, Path):
+                path = str(fmt)
+                for d,p in self.drives.items():
+                    if path.startswith(p[0]):
+                        path = f"{d}:/{path[len(p[0]):]}"
+                        break
+                self.write(path)
+
+            else:
+                self.write_buf.write(fmt)
+
+        else:
+            self.write(struct.pack(f"<{fmt}", *args))
+
+    def send(self):
+        self.write(b"\x00" * (self.CommandBlockLength - self.write_buf.tell()))
+        self.write_raw(self.write_buf.getbuffer())
+
+    def read_raw(self, size_or_buffer, timeout=3000):
+        return self.ep[1].read(size_or_buffer, timeout=timeout).tobytes()
+
+    def write_raw(self, data, timeout=3000):
+        self.ep[0].write(data, timeout=timeout)
+
+    def add_drive(self, drive, path, label=None):
+        if label is None:
+            label = drive
+        self.drives[drive] = (path, label)
+
+    def get_drive(self, idx):
+        return list(self.drives.items())[0]
+
+def make_result(module, description):
+    return ((((module)&0x1FF)) | ((description)&0x1FFF)<<9)
+
+class CommandId(Enum):
+    GetDriveCount = 0
+    GetDriveInfo = 1
+    StatPath = 2
+    GetFileCount = 3
+    GetFile = 4
+    GetDirectoryCount = 5
+    GetDirectory = 6
+    ReadFile = 7
+    WriteFile = 8
+    Create = 9
+    Delete = 10
+    Rename = 11
+    GetSpecialPathCount = 12
+    GetSpecialPath = 13
+    SelectFile = 14
+    Max = 15
 
 class Command:
+    InputMagic = b"GLCI"
+    OutputMagic = b"GLCO"
 
-    GLUC = b"GLUC"
+    ResultModule = 356 # Goldleaf result module
 
-    def __init__(self, cmd_id=0, out=True):
+    ResultSuccess = 0
+    ResultInvalidInput = make_result(ResultModule, 101)
+
+    handler = USBHandler()
+
+    def __init__(self, cmd_id=CommandId.GetDriveCount, out=True):
         if out:
             self.cmd_id = cmd_id
-            self.magic = self.GLUC
+            self.magic = self.OutputMagic
         else:
-            while True:
-                self.magic = read(4)
-                if self.magic_ok():
-                    break
-            self.cmd_id = read_u32()
+            magic = self.read(4)
+            if magic != self.InputMagic:
+                raise ValueError(f"Input magic mismatch")
 
-    def magic_ok(self):
-        return self.magic == self.GLUC
+            self.cmd_id = CommandId(self.read("I"))
 
-    def has_id(self,cmd_id):
+    def has_id(self, cmd_id):
         return self.cmd_id == cmd_id
 
-    def write(self):
-        write(self.magic)
-        write_u32(self.cmd_id)
+    def read(self, *args, **kwargs):
+        return self.handler.read(*args, **kwargs)
 
-    @staticmethod
-    def read():
-        return Command(out=False)
+    def write(self, *args, **kwargs):
+        self.handler.write(*args, **kwargs)
 
-drives = {}
+    def write_base(self, result=ResultSuccess):
+        self.write(self.OutputMagic)
+        self.write("I", result)
 
-def read_path():
-    path = read_string()
-    drive = path.split(":", 1)[0]
-    try:
-        path = path.replace(drive + ":/", drives[drive])
-    except KeyError:
-        pass
-    return path
+    def send(self):
+        self.handler.send()
+
+    @classmethod
+    def read_cmd(cls):
+        cls.handler.clear()
+        return cls(out=False)
+
+    def __repr__(self):
+        return f"Command({self.cmd_id})"
 
 def main():
+    special_paths = {x: Path(Path.home(), x) for x in ["Desktop", "Documents"]}
+
+    for arg in sys.argv[1:]: # Add arguments as special paths
+        folder = Path(arg).absolute()
+        if folder.is_file():
+            folder = folder.parent
+        special_paths[folder.name] = folder
+
+    special_paths = OrderedDict({x: y for x,y in special_paths.items() if y.exists()})
+
     while True:
         while True:
             try:
-                c = Command.read()
+                c = Command.read_cmd()
+                print(f"Received command: {c.cmd_id}")
                 break
             except usb.core.USBError:
                 pass
             except KeyboardInterrupt:
                 return 0
-        if c.has_id(CommandId.ListSystemDrives):
-            drive_labels = {}
-            if "win" in sys.platform[:3].lower():
-                import string
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                bitmask = kernel32.GetLogicalDrives()
-                for letter in string.ascii_uppercase:
-                    if bitmask & 1:
-                        drives[letter] = letter + ":/"
-                        label_buf = ctypes.create_unicode_buffer(1024)
-                        kernel32.GetVolumeInformationW(
-                            ctypes.c_wchar_p(letter + ":\\"),
-                            label_buf,
-                            ctypes.sizeof(label_buf),
-                            None,
-                            None,
-                            None,
-                            None,
-                            0
-                            )
-                        if label_buf.value:
-                            drive_labels[letter] = label_buf.value
-                    bitmask >>= 1
+
+        bufs = []
+
+        if c.has_id(CommandId.GetDriveCount):
+            c.handler.add_drive("ROOT", "/")
+
+            c.write_base()
+            c.write("I", len(c.handler.drives))
+
+        elif c.has_id(CommandId.GetDriveInfo):
+            drive_idx = c.read("I")
+
+            if drive_idx >= len(c.handler.drives):
+                c.write_base(Command.ResultInvalidInput)
+
             else:
-                drives["ROOT"] = "/"
-            write_u32(len(drives))
-            for d in drives:
+                info = c.handler.get_drive(drive_idx)
+
+                c.write_base()
+
+                c.write(info[1][1]) # Label
+                c.write(info[0]) # Prefix
+
+                usage = shutil.disk_usage(info[1][0])
+                c.write("II", usage.free & 0xFFFFFFFF, usage.total & 0xFFFFFFFF) # Not used by Goldleaf but still sent
+
+        elif c.has_id(CommandId.StatPath):
+            path = c.read(Path)
+            type = 0
+            file_size = 0
+
+            if path.is_file():
+                type = 1
+                file_size = path.stat().st_size
+            elif path.is_dir():
+                type = 2
+            else:
+                c.write_base(Command.ResultInvalidInput)
+                c.send()
+                continue
+
+            c.write_base()
+            c.write("II", type, file_size)
+
+        elif c.has_id(CommandId.GetFileCount):
+            path = c.read(Path)
+
+            if path.is_dir():
+                files = [x for x in path.glob("*") if x.is_file()]
+                c.write_base()
+                c.write("I", len(files))
+
+            else:
+                c.write_base(Command.ResultInvalidInput)
+
+        elif c.has_id(CommandId.GetFile):
+            path = c.read(Path)
+            file_idx = c.read("I")
+
+            if path.is_dir():
+                files = [x for x in path.glob("*") if x.is_file()]
+
+                if file_idx >= len(files):
+                    c.write_base(Command.ResultInvalidInput)
+
+                else:
+                    c.write_base()
+                    c.write(files[file_idx].name)
+
+            else:
+                c.write_base(Command.ResultInvalidInput)
+
+        elif c.has_id(CommandId.GetDirectoryCount):
+            path = c.read(Path)
+
+            if path.is_dir():
+                dirs = [x for x in path.glob("*") if x.is_dir()]
+                c.write_base()
+                c.write("I", len(dirs))
+
+            else:
+                c.write_base(Command.ResultInvalidInput)
+
+        elif c.has_id(CommandId.GetDirectory):
+            path = c.read(Path)
+            dir_idx = c.read("I")
+
+            if path.is_dir():
+                dirs = [x for x in path.glob("*") if x.is_dir()]
+
+                if dir_idx >= len(dirs):
+                    c.write_base(Command.ResultInvalidInput)
+
+                else:
+                    c.write_base()
+                    c.write(dirs[dir_idx].name)
+
+            else:
+                c.write_base(Command.ResultInvalidInput)
+
+        elif c.has_id(CommandId.ReadFile):
+            path = c.read(Path)
+            offset, size = c.read("II")
+
+            try:
+                with path.open("rb") as f:
+                    f.seek(offset)
+                    bufs.append(f.read(size))
+
+                    c.write_base()
+                    c.write("I", size)
+
+            except:
+                c.write_base(Command.ResultInvalidInput)
+
+        elif c.has_id(CommandId.WriteFile):
+            path = c.read(Path)
+            size = c.read("I")
+            data = c.handler.read_raw(size)
+            print(path, data)
+
+            try:
+                with path.open("wb") as f:
+                    f.write(data)
+
+                c.write_base()
+
+            except:
+                c.write_base(Command.ResultInvalidInput)
+
+        elif c.has_id(CommandId.Create):
+            type = c.read("I")
+            path = c.read(Path)
+
+            if type == 1:
                 try:
-                    write_string(drive_labels[d])
-                except KeyError:
-                    write_string(d)
-                write_string(d)
-        elif c.has_id(CommandId.GetEnvironmentPaths):
-            env_paths = {x:os.path.expanduser("~/"+x) for x in ["Desktop", "Documents"]}
+                    path.touch()
+                    c.write_base()
 
-            for arg in sys.argv[1:]: # Add arguments as environment paths
-                folder = os.path.abspath(arg)
-                if os.path.isfile(folder):
-                    folder = os.path.dirname(folder)
-                env_paths[os.path.basename(folder)] = folder
+                except:
+                    c.write_base(Command.ResultInvalidInput)
 
-            env_paths = {x:env_paths[x] for x in env_paths if os.path.exists(env_paths[x])}
+            elif type == 2:
+                try:
+                    path.mkdir()
+                    c.write_base()
 
-            write_u32(len(env_paths))
-            for env in env_paths:
-                env_paths[env] = env_paths[env].replace("\\", "/")
-                write_string(env)
-                if env_paths[env][1:3] != ":/":
-                    env_paths[env] = "ROOT:" + env_paths[env]
-                write_string(env_paths[env])
-        elif c.has_id(CommandId.GetPathType):
-            ptype = 0
-            path = read_path()
-            if os.path.isfile(path):
-                ptype = 1
-            elif os.path.isdir(path):
-                ptype = 2
-            write_u32(ptype)
-        elif c.has_id(CommandId.ListDirectories):
-            path = read_path()
-            ents = [x for x in os.listdir(path) if os.path.isdir(os.path.join(path, x))]
-            write_u32(len(ents))
-            for name in ents:
-                write_string(name)
-        elif c.has_id(CommandId.ListFiles):
-            path=read_path()
-            ents=[x for x in os.listdir(path) if os.path.isfile(os.path.join(path, x))]
-            write_u32(len(ents))
-            for name in ents:
-                write_string(name)
-        elif c.has_id(CommandId.GetFileSize):
-            path = read_path()
-            write_u64(os.path.getsize(path))
-        elif c.has_id(CommandId.FileRead):
-            offset = read_u64()
-            size = read_u64()
-            path = read_path()
-            with open(path, "rb") as f:
-                f.seek(offset)
-                data = f.read(size)
-            write_u64(len(data))
-            write(data)
-        elif c.has_id(CommandId.FileWrite):
-            offset = read_u64()
-            size = read_u64()
-            path = read_path()
-            data = read(size)
+                except:
+                    c.write_base(Command.ResultInvalidInput)
+
+            else:
+                c.write_base(Command.ResultInvalidInput)
+
+        elif c.has_id(CommandId.Delete):
+            type = c.read("I")
+            path = c.read(Path)
+
             try:
-                with open(path, "rb") as f:
-                    cont = bytearray(f.read())
-            except FileNotFoundError:
-                cont = bytearray()
-            cont[offset:offset + size] = data
-            with open(path, "wb") as f:
-                f.write(cont)
-        elif c.has_id(CommandId.CreateFile):
-            path = read_path()
-            open(path, "a").close()
-        elif c.has_id(CommandId.CreateDirectory):
-            path = read_path()
+                if type == 1:
+                    os.remove(path)
+                    c.write_base()
+
+                elif type == 2:
+                    shutil.rmtree(path)
+                    c.write_base()
+
+                else:
+                    c.write_base(Command.ResultInvalidInput)
+            except:
+                c.write_base(Command.ResultInvalidInput)
+
+        elif c.has_id(CommandId.Rename):
+            type = c.read("I")
+            path = c.read(Path)
+            new_path = c.read(Path)
+
             try:
-                os.mkdir(path)
-            except FileExistsError:
-                pass
-        elif c.has_id(CommandId.DeleteFile):
-            path = read_path()
-            os.remove(path)
-        elif c.has_id(CommandId.DeleteDirectory):
-            path = read_path()
-            shutil.rmtree(path)
-        elif c.has_id(CommandId.RenameFile):
-            path = read_path()
-            new_name = read_string()
-            os.rename(path, f"{os.path.dirname(path)}/{new_name}")
-        elif c.has_id(CommandId.RenameDirectory):
-            path = read_path()
-            new_name = read_path()
-            os.rename(path, new_name)
-        elif c.has_id(CommandId.GetDriveTotalSpace):
-            path = read_path()
-            write_u64(shutil.disk_usage(path).total)
-        elif c.has_id(CommandId.GetDriveFreeSpace):
-            path = read_path()
-            write_u64(shutil.disk_usage(path).free)
+                path.rename(new_path)
+                c.write_base()
+
+            except:
+                c.write_base(Command.ResultInvalidInput)
+
+        elif c.has_id(CommandId.GetSpecialPathCount):
+            c.write_base()
+            c.write("I", len(special_paths))
+
+        elif c.has_id(CommandId.GetSpecialPath):
+            spath_idx = c.read("I")
+
+            if spath_idx >= len(special_paths):
+                c.write_base(Command.ResultInvalidInput)
+
+            else:
+                info = list(special_paths.items())[spath_idx]
+
+                c.write_base()
+                c.write(info[0])
+                c.write(info[1])
+
+        elif c.has_id(CommandId.SelectFile): # Never used
+            try:
+                path = Path(input("Select file for Goldleaf: "))
+                c.write_base()
+                c.write(path)
+
+            except:
+                c.write_base(Command.ResultInvalidInput)
+
+        c.send()
+
+        for buf in bufs:
+            c.handler.write_raw(buf)
 
     return 0
 
