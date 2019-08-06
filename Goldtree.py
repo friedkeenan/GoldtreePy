@@ -12,7 +12,7 @@ from pathlib import Path
 from collections import OrderedDict
 
 class USBHandler:
-    CommandBlockLength = 0x2000
+    CommandBlockLength = 0x1000
 
     def __init__(self, idVendor=0x057e, idProduct=0x3000):
         super().__init__()
@@ -235,8 +235,10 @@ def main():
                 c.write(info[1][1]) # Label
                 c.write(info[0]) # Prefix
 
-                usage = shutil.disk_usage(info[1][0])
-                c.write("II", usage.free & 0xFFFFFFFF, usage.total & 0xFFFFFFFF) # Not used by Goldleaf but still sent
+                #usage = shutil.disk_usage(info[1][0])
+                #c.write("II", usage.free & 0xFFFFFFFF, usage.total & 0xFFFFFFFF) # Not used by Goldleaf but still sent
+
+                c.write("II", 0, 0) # Stubbed free/total space (not used by Goldleaf)
 
         elif c.has_id(CommandId.StatPath):
             path = c.read(Path)
@@ -254,7 +256,7 @@ def main():
                 continue
 
             c.write_base()
-            c.write("II", type, file_size)
+            c.write("IQ", type, file_size)
 
         elif c.has_id(CommandId.GetFileCount):
             path = c.read(Path)
@@ -314,7 +316,7 @@ def main():
 
         elif c.has_id(CommandId.ReadFile):
             path = c.read(Path)
-            offset, size = c.read("II")
+            offset, size = c.read("QQ")
 
             try:
                 with path.open("rb") as f:
@@ -322,14 +324,14 @@ def main():
                     bufs.append(f.read(size))
 
                     c.write_base()
-                    c.write("I", size)
+                    c.write("Q", size)
 
             except:
                 c.write_base(Command.ResultInvalidInput)
 
         elif c.has_id(CommandId.WriteFile):
             path = c.read(Path)
-            size = c.read("I")
+            size = c.read("Q")
             data = c.handler.read_raw(size)
             print(path, data)
 
