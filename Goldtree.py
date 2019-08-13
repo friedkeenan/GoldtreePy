@@ -49,7 +49,7 @@ class USBHandler:
             path = self.read(str)
             drive = path.split(":", 1)[0]
             try:
-                path = path.replace(drive + ":/", str(self.drives[drive][0]))
+                path = path.replace(drive + ":", str(self.drives[drive][0])).replace("//", "/")
             except KeyError:
                 pass
             return Path(path)
@@ -95,8 +95,8 @@ class USBHandler:
             elif isinstance(fmt, Path):
                 path = str(fmt)
                 for d,p in self.drives.items():
-                    if path.startswith(p[0]):
-                        path = f"{d}:/{path[len(p[0]):]}"
+                    if path.startswith(str(p[0])):
+                        path = f"{d}:/{path[len(str(p[0])):]}"
                         break
                 self.write(path)
 
@@ -110,19 +110,37 @@ class USBHandler:
         self.write(b"\x00" * (self.CommandBlockLength - self.write_buf.tell()))
         self.write_raw(self.write_buf.getbuffer())
 
-    def read_raw(self, size_or_buffer, timeout=3000):
-        return self.ep[1].read(size_or_buffer, timeout=timeout).tobytes()
+    def read_raw(self, size, timeout=3000):
+        return self.ep[1].read(size, timeout=timeout).tobytes()
 
     def write_raw(self, data, timeout=3000):
         self.ep[0].write(data, timeout=timeout)
 
+    def read_raw_chunks(self, size, chunk_size=0x800000):
+        while size > 0:
+            tmp_read = min(chunk_size, size)
+            yield self.read_raw(tmp_read)
+
+            size -= tmp_read
+
+    def write_raw_chunks(self, data, chunk_size=0x800000):
+        to_write = len(data)
+        cur_offset = 0
+
+        while to_write > 0:
+            tmp_write = min(chunk_size, to_write)
+            self.write_raw(data[cur_offset: cur_offset + tmp_write])
+
+            cur_offset += tmp_write
+            to_write -= tmp_write
+
     def add_drive(self, drive, path, label=None):
         if label is None:
             label = drive
-        self.drives[drive] = (path, label)
+        self.drives[drive] = (Path(path), label)
 
     def get_drive(self, idx):
-        return list(self.drives.items())[0]
+        return list(self.drives.items())[idx]
 
 def make_result(module, description):
     return ((((module)&0x1FF)) | ((description)&0x1FFF)<<9)
@@ -192,14 +210,7 @@ class Command:
         return f"Command({self.cmd_id})"
 
 def main():
-    special_paths = {x: Path(Path.home(), x) for x in ["Desktop", "Documents"]}
-
-    for arg in sys.argv[1:]: # Add arguments as special paths
-        folder = Path(arg).absolute()
-        if folder.is_file():
-            folder = folder.parent
-        special_paths[folder.name] = folder
-
+    special_paths = {x: Path("~", x).expanduser() for x in ["Desktop", "Documents"]}
     special_paths = OrderedDict({x: y for x,y in special_paths.items() if y.exists()})
 
     while True:
@@ -217,6 +228,12 @@ def main():
 
         if c.has_id(CommandId.GetDriveCount):
             c.handler.add_drive("ROOT", "/")
+
+            for arg in sys.argv[1:]: # Add arguments as drives
+                folder = Path(arg).absolute()
+                if folder.is_file():
+                    folder = folder.parent
+                c.handler.add_drive(folder.name, folder)
 
             c.write_base()
             c.write("I", len(c.handler.drives))
@@ -333,7 +350,6 @@ def main():
             path = c.read(Path)
             size = c.read("Q")
             data = c.handler.read_raw(size)
-            print(path, data)
 
             try:
                 with path.open("wb") as f:
@@ -426,7 +442,7 @@ def main():
         c.send()
 
         for buf in bufs:
-            c.handler.write_raw(buf)
+            c.handler.write_raw_chunks(buf)
 
     return 0
 
