@@ -42,8 +42,8 @@ class USBHandler:
 
     def read(self, size=-1):
         if size == str:
-            length = self.read("I")
-            return self.read(length).decode().replace("\x00", "")
+            length = self.read("I") * 2
+            return self.read(length).decode("utf-16-le")
 
         elif size == Path:
             path = self.read(str)
@@ -83,14 +83,11 @@ class USBHandler:
 
         return ret
 
-    def write(self, fmt=None, *args):
-        if fmt is None:
-            return
-
+    def write(self, fmt, *args):
         if len(args) < 1:
             if isinstance(fmt, str):
-                self.write("I", len(fmt) + 1)
-                self.write(fmt.encode() + b"\x00")
+                self.write("I", len(fmt))
+                self.write(fmt.encode("utf-16-le"))
 
             elif isinstance(fmt, Path):
                 path = str(fmt)
@@ -115,24 +112,6 @@ class USBHandler:
 
     def write_raw(self, data, timeout=3000):
         self.ep[0].write(data, timeout=timeout)
-
-    def read_raw_chunks(self, size, chunk_size=0x800000):
-        while size > 0:
-            tmp_read = min(chunk_size, size)
-            yield self.read_raw(tmp_read)
-
-            size -= tmp_read
-
-    def write_raw_chunks(self, data, chunk_size=0x800000):
-        to_write = len(data)
-        cur_offset = 0
-
-        while to_write > 0:
-            tmp_write = min(chunk_size, to_write)
-            self.write_raw(data[cur_offset: cur_offset + tmp_write])
-
-            cur_offset += tmp_write
-            to_write -= tmp_write
 
     def add_drive(self, drive, path, label=None):
         if label is None:
@@ -194,6 +173,12 @@ class Command:
     def write(self, *args, **kwargs):
         self.handler.write(*args, **kwargs)
 
+    def read_raw(self, size):
+        return self.handler.read_raw(size)
+
+    def write_raw(self, buf):
+        self.handler.write_raw(buf)
+
     def write_base(self, result=ResultSuccess):
         self.write(self.OutputMagic)
         self.write("I", result)
@@ -213,6 +198,12 @@ def main():
     special_paths = {x: Path("~", x).expanduser() for x in ["Desktop", "Documents"]}
     special_paths = OrderedDict({x: y for x,y in special_paths.items() if y.exists()})
 
+    write_file = io.IOBase()
+    write_file.close()
+
+    read_file = io.IOBase()
+    read_file.close()
+
     while True:
         while True:
             try:
@@ -223,6 +214,11 @@ def main():
                 pass
             except KeyboardInterrupt:
                 return 0
+
+        if not c.has_id(CommandId.WriteFile):
+            write_file.close()
+        if not c.has_id(CommandId.ReadFile):
+            read_file.close()
 
         bufs = []
 
@@ -336,12 +332,14 @@ def main():
             offset, size = c.read("QQ")
 
             try:
-                with path.open("rb") as f:
-                    f.seek(offset)
-                    bufs.append(f.read(size))
+                if read_file.closed:
+                    read_file = path.open("rb")
 
-                    c.write_base()
-                    c.write("Q", size)
+                read_file.seek(offset)
+                bufs.append(read_file.read(size))
+
+                c.write_base()
+                c.write("Q", size)
 
             except:
                 c.write_base(Command.ResultInvalidInput)
@@ -349,11 +347,13 @@ def main():
         elif c.has_id(CommandId.WriteFile):
             path = c.read(Path)
             size = c.read("Q")
-            data = c.handler.read_raw(size)
+            data = c.read_raw(size)
 
             try:
-                with path.open("wb") as f:
-                    f.write(data)
+                if write_file.closed:
+                    write_file = path.open("wb")
+
+                write_file.write(data)
 
                 c.write_base()
 
@@ -432,7 +432,8 @@ def main():
 
         elif c.has_id(CommandId.SelectFile): # Never used
             try:
-                path = Path(input("Select file for Goldleaf: "))
+                print()
+                path = Path(input("Select file for Goldleaf: ")).absolute()
                 c.write_base()
                 c.write(path)
 
@@ -442,7 +443,7 @@ def main():
         c.send()
 
         for buf in bufs:
-            c.handler.write_raw_chunks(buf)
+            c.write_raw(buf)
 
     return 0
 
