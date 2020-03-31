@@ -125,22 +125,25 @@ def make_result(module, description):
     return ((((module)&0x1FF)) | ((description)&0x1FFF)<<9)
 
 class CommandId(Enum):
-    GetDriveCount = 0
-    GetDriveInfo = 1
-    StatPath = 2
-    GetFileCount = 3
-    GetFile = 4
-    GetDirectoryCount = 5
-    GetDirectory = 6
-    ReadFile = 7
-    WriteFile = 8
-    Create = 9
-    Delete = 10
-    Rename = 11
-    GetSpecialPathCount = 12
-    GetSpecialPath = 13
-    SelectFile = 14
-    Max = 15
+    Invalid = 0
+    GetDriveCount = 1
+    GetDriveInfo = 2
+    StatPath = 3
+    GetFileCount = 4
+    GetFile = 5
+    GetDirectoryCount = 6
+    GetDirectory = 7
+    StartFile = 8
+    ReadFile = 9
+    WriteFile = 10
+    EndFile = 11
+    Create = 12
+    Delete = 13
+    Rename = 14
+    GetSpecialPathCount = 15
+    GetSpecialPath = 16
+    SelectFile = 17
+    Max = 18
 
 class Command:
     InputMagic = b"GLCI"
@@ -327,6 +330,24 @@ def main():
             else:
                 c.write_base(Command.ResultInvalidInput)
 
+        elif c.has_id(CommandId.StartFile):
+            path = c.read(Path)
+            mode = c.read("I")
+
+            if mode == 1:
+                if not read_file.closed:
+                    read_file.close()
+                read_file = path.open("rb")
+            else:
+                if not write_file.closed:
+                    write_file.close()
+                if mode == 3:
+                    write_file = path.open("ab")
+                else:
+                    write_file = path.open("rb")
+
+            c.write_base()
+
         elif c.has_id(CommandId.ReadFile):
             path = c.read(Path)
             offset, size = c.read("QQ")
@@ -359,6 +380,18 @@ def main():
 
             except:
                 c.write_base(Command.ResultInvalidInput)
+
+        elif c.has_id(CommandId.EndFile):
+            mode = c.read("I")
+
+            if mode == 1:
+                if not read_file.closed:
+                    read_file.close()
+            else:
+                if not write_file.closed:
+                    write_file.close()
+
+            c.write_base()
 
         elif c.has_id(CommandId.Create):
             type = c.read("I")
