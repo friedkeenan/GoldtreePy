@@ -1,13 +1,196 @@
 #!/usr/bin/env python3
 
 import enum
-import inspect
 import io
 import shutil
+import pak
 import usb.core
 import usb.util
-from ctypes import *
 from pathlib import Path
+
+class String(pak.Type):
+    @classmethod
+    def _unpack(cls, buf, *, ctx):
+        length = pak.UInt32.unpack(buf, ctx=ctx)
+
+        return buf.read(length).decode("utf-8")
+
+    @classmethod
+    def _pack(cls, value, *, ctx):
+        encoded = value.encode("utf-8")
+
+        return pak.UInt32.pack(len(encoded), ctx=ctx) + encoded
+
+class PathType(pak.Type):
+    @classmethod
+    def _unpack(cls, buf, *, ctx):
+        raw_path = String.unpack(buf, ctx=ctx)
+
+        drive, relative_path = raw_path.split(":/", 1)
+
+        try:
+            drive_path = ctx.command_handler.drives[drive]
+        except KeyError:
+            raise ValueError(f"Drive not found: {drive}")
+
+        return Path(drive_path, relative_path)
+
+    @classmethod
+    def _pack(cls, value, *, ctx):
+        value = value.absolute()
+
+        for drive, drive_path in ctx.command_handler.drives.items():
+            if drive_path in value.parents:
+                value    = value.relative_to(drive_path)
+                raw_path = f"{drive}:/{value}"
+
+                return String.pack(raw_path, ctx=ctx)
+
+        raise ValueError(f"Path on no known drive: {value}")
+
+class GoldtreeContext(pak.PacketContext):
+    def __init__(self, command_handler):
+        self.command_handler = command_handler
+
+class GoldtreePacket(pak.Packet):
+    pass
+
+class Command(GoldtreePacket, id_type=pak.UInt32):
+    MAGIC = b"GLCI"
+
+class Result(enum.Enum):
+    Success           = 0x0000
+    ExceptionCaught   = 0xBAF1
+    InvalidIndex      = 0xBAF2
+    InvalidFileMode   = 0xBAF3
+    SelectionCanceled = 0xBAF4
+
+class Response(GoldtreePacket):
+    MAGIC = b"GLCO"
+
+    result: pak.Enum(pak.UInt32, Result)
+
+class CountResponse(Response):
+    count: pak.UInt32
+
+class GetDriveCountCommand(Command):
+    id = 1
+
+class GetDriveInfoCommand(Command):
+    id = 2
+
+    index: pak.UInt32
+
+class DriveInfoResponse(Response):
+    label:  String
+    prefix: String
+
+    # Unused but present fields
+    total_space: pak.UInt64
+    free_space:  pak.UInt64
+
+class StatPathCommand(Command):
+    id = 3
+
+    path: PathType
+
+class PathKind(enum.Enum):
+    Invalid   = 0
+    File      = 1
+    Directory = 2
+
+class StatPathResponse(Response):
+    path_kind: pak.Enum(pak.UInt32, PathKind)
+    file_size: pak.UInt64
+
+class GetChildCountCommand(Command):
+    directory: PathType
+
+class GetFileCountCommand(GetChildCountCommand):
+    id = 4
+
+class GetDirectoryCountCommand(GetChildCountCommand):
+    id = 6
+
+class GetChildCommand(Command):
+    directory: PathType
+    index:     pak.UInt32
+
+class GetFileCommand(GetChildCommand):
+    id = 5
+
+class GetDirectoryCommand(GetChildCommand):
+    id = 7
+
+class ChildResponse(Response):
+    name: String
+
+class FileMode(enum.Enum):
+    Read   = 1
+    Write  = 2
+    Append = 3
+
+class StartFileCommand(Command):
+    id = 8
+
+    path: PathType
+    mode: pak.Enum(pak.UInt32, FileMode)
+
+class SizeResponse(Response):
+    size: pak.UInt64
+
+class ReadFileCommand(Command):
+    id = 9
+
+    path:   PathType
+    offset: pak.UInt64
+    size:   pak.UInt64
+
+class WriteFileCommand(Command):
+    id = 10
+
+    path: PathType
+    size: pak.UInt64
+
+class EndFileCommand(Command):
+    id = 11
+
+    mode: pak.Enum(pak.UInt32, FileMode)
+
+class CreateCommand(Command):
+    id = 12
+
+    path:      PathType
+    path_kind: pak.Enum(pak.UInt32, PathKind)
+
+class DeleteCommand(Command):
+    id = 13
+
+    path: PathType
+
+class RenameCommand(Command):
+    id = 14
+
+    old_path: PathType
+    new_path: PathType
+
+class GetSpecialPathCountCommand(Command):
+    id = 15
+
+class GetSpecialPathCommand(Command):
+    id = 16
+
+    index: pak.UInt32
+
+class SpecialPathResponse(Response):
+    name: String
+    path: PathType
+
+class SelectFileCommand(Command):
+    id = 17
+
+class PathResponse(Response):
+    path: PathType
 
 class UsbInterface:
     default_timeout = 3000
@@ -49,72 +232,8 @@ class UsbInterface:
                 if timeout is not None:
                     raise e
 
-class CommandId(enum.Enum):
-    Invalid             = 0
-    GetDriveCount       = 1
-    GetDriveInfo        = 2
-    StatPath            = 3
-    GetFileCount        = 4
-    GetFile             = 5
-    GetDirectoryCount   = 6
-    GetDirectory        = 7
-    StartFile           = 8
-    ReadFile            = 9
-    WriteFile           = 10
-    EndFile             = 11
-    Create              = 12
-    Delete              = 13
-    Rename              = 14
-    GetSpecialPathCount = 15
-    GetSpecialPath      = 16
-    SelectFile          = 17
-
-class Result(enum.Enum):
-    Success           = 0x0000
-    ExceptionCaught   = 0xBAF1
-    InvalidIndex      = 0xBAF2
-    InvalidFileMode   = 0xBAF3
-    SelectionCanceled = 0xBAF4
-
-class PathType(enum.Enum):
-    Invalid   = 0
-    File      = 1
-    Directory = 2
-
-class FileMode(enum.Enum):
-    Read   = 1
-    Write  = 2
-    Append = 3
-
-def command_handler(id):
-    """
-    Registers the decorated function as
-    a command handler.
-
-    The annotations for arguments will be
-    read and passed to the decorated function.
-
-    Return None or 0 for a success, return
-    a non-zero int for a failure.
-    """
-
-    def dec(func):
-        def wrapper(self):
-            return func(self, **{x: self.read(y) for x, y in inspect.get_annotations(func).items()})
-
-        # Set the _handle_id attribute to be later
-        # recognized and registered by the class
-        wrapper._handle_id = id
-
-        return wrapper
-
-    return dec
-
-class CommandProcessor:
-    block_size = 0x1000
-
-    in_magic  = b"GLCI"
-    out_magic = b"GLCO"
+class CommandProcessor(pak.PacketHandler):
+    BLOCK_SIZE = 0x1000
 
     def __init__(self, drive_paths=(), *, selected_path=None):
         self.selected_path = selected_path
@@ -132,87 +251,7 @@ class CommandProcessor:
         self.special_paths = [Path("~", x).expanduser() for x in ("Desktop", "Documents")]
         self.special_paths = [x for x in self.special_paths if x.exists()]
 
-        self.command_handlers = {}
-        for attr in dir(self):
-            tmp = getattr(self, attr)
-
-            if hasattr(tmp, "_handle_id"):
-                # If the function was decorated with
-                # the command_handler function, then
-                # it will have the _handle_id attribute
-                self.command_handlers[tmp._handle_id] = tmp
-
-    def reset_buffers(self):
-        self.read_buf = io.BytesIO()
-        self.write_buf = io.BytesIO()
-        self.buffers.clear()
-
-    def read(self, *args):
-        ret = []
-
-        for arg in args:
-            if isinstance(arg, type):
-                if arg == str:
-                    size = self.read(c_uint32)
-                    tmp = self.read_buf.read(size)
-                    ret.append(tmp.decode("utf-8"))
-
-                elif arg == Path:
-                    path = self.read(str)
-                    drive, relative_path = path.split(":/", 1)
-
-                    try:
-                        drive_path = self.drives[drive]
-                    except KeyError:
-                        raise ValueError(f"Drive not found: {drive}")
-
-                    ret.append(Path(drive_path, relative_path))
-
-                else:
-                    if issubclass(arg, Array):
-                        arg = arg._type_.__ctype_le__ * arg._length
-                    elif not issubclass(arg, Structure):
-                        arg = arg.__ctype_le__
-
-                    tmp = arg()
-                    self.read_buf.readinto(tmp)
-                    ret.append(tmp.value)
-            else:
-                ret.append(self.read_buf.read(arg))
-
-        if len(ret) == 1:
-            return ret[0]
-
-        if len(ret) == 0:
-            return None
-
-        return tuple(ret)
-
-    def write(self, *args):
-        for arg in args:
-            if isinstance(arg, str):
-                self.write(c_uint32(len(arg)))
-                self.write(arg.encode("utf-8"))
-            elif isinstance(arg, Path):
-                arg = arg.absolute()
-
-                for drive, path in self.drives.items():
-                    if path in arg.parents:
-                        arg = arg.relative_to(path)
-                        arg = f"{drive}:/{arg}"
-                        break
-                else:
-                    raise ValueError("Somehow you have a path with no valid drive")
-
-                self.write(arg)
-            else:
-                self.write_buf.write(arg)
-
-    def add_buffer(self, buf):
-        self.buffers.append(buf)
-
-    def get_buffer(self, size):
-        return self.usb.read(size)
+        super().__init__()
 
     def list_files(self, path):
         return [x for x in path.iterdir() if x.is_file()]
@@ -224,216 +263,231 @@ class CommandProcessor:
         self.usb = UsbInterface()
         print(f"Connected to {self.usb.dev.product} - {self.usb.dev.serial_number}")
 
-        self.read_buf = io.BytesIO()
-        self.write_buf = io.BytesIO()
-
-        self.read_file = io.IOBase()
+        self.read_file  = io.IOBase()
         self.write_file = io.IOBase()
         self.read_file.close()
         self.write_file.close()
 
-        self.buffers = []
+        self.ctx = GoldtreeContext(self)
 
-    def send(self, result):
-        response_buf = io.BytesIO()
-        response_buf.write(self.out_magic)
-        response_buf.write(c_uint32(result.value))
+    def recv_command(self):
+        buf = io.BytesIO(self.usb.read(self.BLOCK_SIZE, timeout=None))
 
-        self.write_buf.seek(0)
-        response_buf.write(self.write_buf.read())
+        magic = buf.read(4)
+        if magic != Command.MAGIC:
+            print(f"Invalid input magic: {magic}")
+            print(buf.getvalue())
 
-        response_buf.write(b"\x00" * (self.block_size - response_buf.tell()))
+            return None
 
-        response_buf.seek(0)
-        self.usb.write(response_buf.read())
+        id = Command.unpack_id(buf, ctx=self.ctx)
+        command_cls = Command.subclass_with_id(id, ctx=self.ctx)
 
-        for buf in self.buffers:
-            self.usb.write(buf)
+        if command_cls is None:
+            print(f"Command with unknown ID: {id}")
 
-        self.reset_buffers()
+            return None
+
+        return command_cls.unpack(buf, ctx=self.ctx)
+
+    def send_response(self, response_cls, **kwargs):
+        response = response_cls(ctx=self.ctx, **kwargs)
+
+        response_buf = Response.MAGIC + response.pack(ctx=self.ctx)
+
+        # Pad the rest of the buffer to the proper block size.
+        response_buf += b"\x00" * (self.BLOCK_SIZE - len(response_buf))
+
+        self.usb.write(response_buf)
+
+    def send_empty_response(self, result):
+        self.send_response(
+            Response,
+
+            result = result,
+        )
+
+    def send_empty_success(self):
+        self.send_response(Response)
+
+    def recv_buffer(self, size):
+        return self.usb.read(size)
+
+    def send_buffer(self, buffer):
+        self.usb.write(buffer)
 
     def loop(self):
         self.start()
 
-        while True:
-            while True:
-                try:
-                    self.read_buf.write(self.usb.read(self.block_size, timeout=None))
-                    self.read_buf.seek(0)
-                    break
-                except KeyboardInterrupt:
-                    return
-
-            magic = self.read(4)
-            if magic != self.in_magic:
-                print(f"Invalid input magic: {magic}")
-                print(self.read_buf.getvalue())
-                continue
-
-            id = CommandId(self.read(c_uint32))
-            print(f"Command: {id.name}")
-
-            if id not in self.command_handlers:
-                print(f"Unhandled command: {id.name}")
-                continue
-
-            result = self.command_handlers[id]()
-            if result != Result.Success:
-                print(f"An error occured: {result}")
-
-            self.send(result)
-
-    @command_handler(CommandId.GetDriveCount)
-    def get_drive_count(self):
-        self.write(c_uint32(len(self.drives)))
-
-        return Result.Success
-
-    @command_handler(CommandId.GetDriveInfo)
-    def get_drive_info(self, index: c_uint32):
-        if index >= len(self.drives):
-            return Result.InvalidIndex
-
-        drive = tuple(self.drives.keys())[index]
-
-        # Label and prefix
-        self.write(drive, drive)
-
-        # Intended to be total and free space, currently not used.
-        self.write(c_uint64(0), c_uint64(0))
-
-        return Result.Success
-
-    @command_handler(CommandId.StatPath)
-    def stat_path(self, path: Path):
         try:
-            path_type = PathType.Invalid
+            while True:
+                command = self.recv_command()
+                if command is None:
+                    continue
+
+                print(f"Command: {command}")
+
+                for listener in self.listeners_for_packet(command):
+                    listener(command)
+
+        except KeyboardInterrupt:
+            pass
+
+    @pak.packet_listener(GetDriveCountCommand)
+    def get_drive_count(self, cmd):
+        self.send_response(
+            CountResponse,
+
+            count = len(self.drives),
+        )
+
+    @pak.packet_listener(GetDriveInfoCommand)
+    def get_drive_info(self, cmd):
+        if cmd.index >= len(self.drives):
+            self.send_empty_response(Result.InvalidIndex)
+
+            return
+
+        drive = tuple(self.drives.keys())[cmd.index]
+
+        self.send_response(
+            DriveInfoResponse,
+
+            label  = drive,
+            prefix = drive,
+        )
+
+    @pak.packet_listener(StatPathCommand)
+    def stat_path(self, cmd):
+        try:
+            path_kind = PathKind.Invalid
             file_size = 0
 
-            if path.is_file():
-                path_type = PathType.File
-                file_size = path.stat().st_size
-            elif path.is_dir():
-                path_type = PathType.Directory
+            if cmd.path.is_file():
+                path_kind = PathKind.File
+                file_size = cmd.path.stat().st_size
+            elif cmd.path.is_dir():
+                path_kind = PathKind.Directory
 
-            self.write(c_uint32(path_type.value), c_uint64(file_size))
-        except Exception:
-            return Result.ExceptionCaught
+            self.send_response(
+                StatPathResponse,
 
-        return Result.Success
+                path_kind = path_kind,
+                file_size = file_size,
+            )
+        except Exception as e:
+            self.send_empty_response(Result.ExceptionCaught)
 
-    @command_handler(CommandId.GetFileCount)
-    def get_file_count(self, path: Path):
-        files = self.list_files(path)
-        self.write(c_uint32(len(files)))
+    @pak.packet_listener(GetChildCountCommand)
+    def get_child_count(self, cmd):
+        if isinstance(cmd, GetFileCountCommand):
+            children = self.list_files(cmd.directory)
+        else:
+            children = self.list_directories(cmd.directory)
 
-        return Result.Success
+        self.send_response(
+            CountResponse,
 
-    @command_handler(CommandId.GetFile)
-    def get_file(self, path: Path, index: c_uint32):
-        files = self.list_files(path)
+            count = len(children),
+        )
+
+    @pak.packet_listener(GetChildCommand)
+    def get_child(self, cmd):
+        if isinstance(cmd, GetFileCommand):
+            children = self.list_files(cmd.directory)
+        else:
+            children = self.list_directories(cmd.directory)
 
         try:
-            file = files[index]
+            child = children[cmd.index]
         except IndexError:
-            return Result.InvalidIndex
+            self.send_empty_response(Result.InvalidIndex)
 
-        self.write(file.name)
+        self.send_response(
+            ChildResponse,
 
-        return Result.Success
+            name = child.name,
+        )
 
-    @command_handler(CommandId.GetDirectoryCount)
-    def get_directory_count(self, path: Path):
-        directories = self.list_directories(path)
-        self.write(c_uint32(len(directories)))
+    @pak.packet_listener(StartFileCommand)
+    def start_file(self, cmd):
+        if cmd.mode is pak.Enum.INVALID:
+            self.send_empty_response(Result.InvalidFileMode)
 
-        return Result.Success
-
-    @command_handler(CommandId.GetDirectory)
-    def get_directory(self, path: Path, index: c_uint32):
-        directories = self.list_directories(path)
+            return
 
         try:
-            directory = directories[index]
-        except IndexError:
-            return Result.InvalidIndex
-
-        self.write(directory.name)
-
-        return Result.Success
-
-    @command_handler(CommandId.StartFile)
-    def start_file(self, path: Path, mode: c_uint32):
-        try:
-            mode = FileMode(mode)
-        except ValueError:
-            return Result.InvalidFileMode
-
-        try:
-            match mode:
+            match cmd.mode:
                 case FileMode.Read:
                     self.read_file.close()
-                    self.read_file = path.open("rb")
+                    self.read_file = cmd.path.open("rb")
 
                 case FileMode.Write:
                     self.write_file.close()
-                    self.write_file = path.open("wb")
+                    self.write_file = cmd.path.open("wb")
 
                 case FileMode.Append:
                     self.write_file.close()
-                    self.write_file = path.open("ab")
+                    self.write_file = cmd.path.open("ab")
 
         except Exception:
-            return Result.ExceptionCaught
+            self.send_empty_response(Result.ExceptionCaught)
 
-        return Result.Success
+            return
 
-    @command_handler(CommandId.ReadFile)
-    def read_file(self, path: Path, offset: c_uint64, size: c_uint64):
+        self.send_empty_success()
+
+    @pak.packet_listener(ReadFileCommand)
+    def read_file(self, cmd):
         try:
-            buf = b""
-
             if self.read_file.closed:
-                with path.open("rb") as f:
-                    f.seek(offset)
-                    buf = f.read(size)
+                with cmd.path.open("rb") as f:
+                    f.seek(cmd.offset)
+                    buf = f.read(cmd.size)
             else:
-                self.read_file.seek(offset)
-                buf = self.read_file.read(size)
+                self.read_file.seek(cmd.offset)
+                buf = self.read_file.read(cmd.size)
 
-            self.write(c_uint64(len(buf)))
-            self.add_buffer(buf)
+            self.send_response(
+                SizeResponse,
+
+                size = len(buf),
+            )
+
+            self.send_buffer(buf)
+
         except Exception:
-            return Result.ExceptionCaught
+            self.send_empty_response(Result.ExceptionCaught)
 
-        return Result.Success
-
-    @command_handler(CommandId.WriteFile)
-    def write_file(self, path: Path, size: c_uint64):
-        buf = self.get_buffer(size)
+    @pak.packet_listener(WriteFileCommand)
+    def write_file(self, cmd):
+        buf = self.recv_buffer(cmd.size)
 
         try:
             if self.write_file.closed:
-                with path.open("wb") as f:
+                with cmd.path.open("wb") as f:
                     f.write(buf)
             else:
                 self.write_file.write(buf)
 
-            self.write(c_uint64(size))
+            self.send_response(
+                SizeResponse,
+
+                size = cmd.size,
+            )
+
         except Exception:
-            return Result.ExceptionCaught
+            self.send_empty_response(Result.ExceptionCaught)
 
-        return Result.Success
+    @pak.packet_listener(EndFileCommand)
+    def end_file(self, cmd):
+        if cmd.mode is pak.Enum.INVALID:
+            self.send_empty_response(Result.InvalidFileMode)
 
-    @command_handler(CommandId.EndFile)
-    def end_file(self, mode: c_uint32):
-        try:
-            mode = FileMode(mode)
-        except ValueError:
-            return Result.InvalidFileMode
+            return
 
         try:
-            match mode:
+            match cmd.mode:
                 case FileMode.Read:
                     self.read_file.close()
 
@@ -441,85 +495,108 @@ class CommandProcessor:
                     self.write_file.close()
 
         except Exception:
-            return Result.ExceptionCaught
+            self.send_empty_response(Result.ExceptionCaught)
 
-        return Result.Success
+            return
 
-    @command_handler(CommandId.Create)
-    def create(self, path: Path, path_type: c_uint32):
+        self.send_empty_success()
+
+    @pak.packet_listener(CreateCommand)
+    def create_file(self, cmd):
+        if cmd.path_kind is pak.Enum.INVALID:
+            cmd.path_kind = PathKind.Invalid
+
         try:
-            path_type = PathType(path_type)
-        except ValueError:
-            path_type = PathType.Invalid
+            match cmd.path_kind:
+                case PathKind.File:
+                    cmd.path.touch()
 
-        try:
-            match path_type:
-                case PathType.File:
-                    path.touch()
-
-                case PathType.Directory:
-                    path.mkdir()
+                case PathKind.Directory:
+                    cmd.path.mkdir()
 
         except Exception:
-            return Result.ExceptionCaught
+            self.send_empty_response(Result.ExceptionCaught)
 
-        return Result.Success
+            return
 
-    @command_handler(CommandId.Delete)
-    def delete(self, path: Path):
+        self.send_empty_success()
+
+    @pak.packet_listener(DeleteCommand)
+    def delete(self, cmd):
         try:
-            if path.is_file():
-                path.unlink()
-            elif path.is_dir():
-                shutil.rmtree(path)
+            if cmd.path.is_file():
+                cmd.path.unlink()
+            elif cmd.path.is_dir():
+                shutil.rmtree(cmd.path)
+
         except Exception:
-            return Result.ExceptionCaught
+            self.send_empty_response(Result.ExceptionCaught)
 
-        return Result.Success
+            return
 
-    @command_handler(CommandId.Rename)
-    def rename(self, path: Path, new_path: Path):
+        self.send_empty_success()
+
+    @pak.packet_listener(RenameCommand)
+    def rename(self, cmd):
         try:
-            path.rename(new_path)
+            cmd.old_path.rename(cmd.new_path)
+
         except Exception:
-            return Result.ExceptionCaught
+            self.send_empty_response(Result.ExceptionCaught)
 
-        return Result.Success
+            return
 
-    @command_handler(CommandId.GetSpecialPathCount)
-    def get_special_path_count(self):
-        self.write(c_uint32(len(self.special_paths)))
+        self.send_empty_success()
 
-        return Result.Success
+    @pak.packet_listener(GetSpecialPathCountCommand)
+    def get_special_path_count(self, cmd):
+        self.send_response(
+            CountResponse,
 
-    @command_handler(CommandId.GetSpecialPath)
-    def get_special_path(self, index: c_uint32):
+            count = len(self.special_paths)
+        )
+
+    @pak.packet_listener(GetSpecialPathCommand)
+    def get_special_path(self, cmd):
         try:
-            path = self.special_paths[index]
+            path = self.special_paths[cmd.index]
         except IndexError:
-            return Result.InvalidIndex
+            self.send_response(
+                Response,
 
-        self.write(path.name, path)
+                result = Result.InvalidIndex,
+            )
 
-        return Result.Success
+            return
 
-    @command_handler(CommandId.SelectFile)
-    def select_file(self):
-        if self.selected_path is None:
+        self.send_response(
+            SpecialPathResponse,
+
+            name = path.name,
+            path = path,
+        )
+
+    @pak.packet_listener(SelectFileCommand)
+    def select_file(self, cmd):
+        path = self.selected_path
+        if path is None:
             try:
                 print()
-                path = Path(input("Select file (use CTRL-C to cancel): "))
-                print()
+                path = Path(input("Select file: (Use CTRL+C to cancel): "))
+
             except KeyboardInterrupt:
+                self.send_empty_response(Result.SelectionCanceled)
+
+                return
+
+            finally:
                 print()
 
-                return Result.SelectionCanceled
+        self.send_response(
+            PathResponse,
 
-            self.write(path)
-        else:
-            self.write(self.selected_path)
-
-        return Result.Success
+            path = path,
+        )
 
 if __name__ == "__main__":
     import argparse
