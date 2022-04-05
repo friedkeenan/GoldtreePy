@@ -106,18 +106,18 @@ class StatPathResponse(Response):
 class GetChildCountCommand(Command):
     directory: PathType
 
-class GetFileCountCommand(GetChildCountCommand):
-    id = 4
-
-class GetDirectoryCountCommand(GetChildCountCommand):
-    id = 6
-
 class GetChildCommand(Command):
     directory: PathType
     index:     pak.UInt32
 
+class GetFileCountCommand(GetChildCountCommand):
+    id = 4
+
 class GetFileCommand(GetChildCommand):
     id = 5
+
+class GetDirectoryCountCommand(GetChildCountCommand):
+    id = 6
 
 class GetDirectoryCommand(GetChildCommand):
     id = 7
