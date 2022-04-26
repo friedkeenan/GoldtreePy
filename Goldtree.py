@@ -55,7 +55,9 @@ class GoldtreeContext(pak.PacketContext):
 class GoldtreePacket(pak.Packet):
     pass
 
-class Command(GoldtreePacket, id_type=pak.UInt32):
+class Command(GoldtreePacket):
+    id_type = pak.UInt32
+
     MAGIC = b"GLCI"
 
 class Result(enum.Enum):
