@@ -53,10 +53,20 @@ class GoldtreeContext(pak.PacketContext):
         self.command_handler = command_handler
 
 class GoldtreePacket(pak.Packet):
-    pass
+    MAGIC = None
 
-class Command(GoldtreePacket, id_type=pak.UInt32):
+    class Header(pak.Packet.Header):
+        magic: pak.RawByte[4]
+
+    @classmethod
+    def magic(cls, *, ctx=None):
+        return cls.MAGIC
+
+class Command(GoldtreePacket):
     MAGIC = b"GLCI"
+
+    class Header(GoldtreePacket.Header):
+        id: pak.UInt32
 
 class Result(enum.Enum):
     Success           = 0x0000
@@ -273,18 +283,17 @@ class CommandProcessor(pak.PacketHandler):
     def recv_command(self):
         buf = io.BytesIO(self.usb.read(self.BLOCK_SIZE, timeout=None))
 
-        magic = buf.read(4)
-        if magic != Command.MAGIC:
-            print(f"Invalid input magic: {magic}")
+        header = Command.Header.unpack(buf, ctx=self.ctx)
+
+        if header.magic != Command.MAGIC:
+            print(f"Invalid input magic: {header.magic}")
             print(buf.getvalue())
 
             return None
 
-        id = Command.unpack_id(buf, ctx=self.ctx)
-        command_cls = Command.subclass_with_id(id, ctx=self.ctx)
-
+        command_cls = Command.subclass_with_id(header.id, ctx=self.ctx)
         if command_cls is None:
-            print(f"Command with unknown ID: {id}")
+            print(f"Command with unknown ID: {header.id}")
 
             return None
 
@@ -293,7 +302,7 @@ class CommandProcessor(pak.PacketHandler):
     def send_response(self, response_cls, **kwargs):
         response = response_cls(ctx=self.ctx, **kwargs)
 
-        response_buf = Response.MAGIC + response.pack(ctx=self.ctx)
+        response_buf = response.pack(ctx=self.ctx)
 
         # Pad the rest of the buffer to the proper block size.
         response_buf += b"\x00" * (self.BLOCK_SIZE - len(response_buf))
