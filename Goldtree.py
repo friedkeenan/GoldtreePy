@@ -29,7 +29,7 @@ class PathType(pak.Type):
         drive, relative_path = raw_path.split(":/", 1)
 
         try:
-            drive_path = ctx.command_handler.drives[drive]
+            drive_path = ctx.drives[drive]
         except KeyError:
             raise ValueError(f"Drive not found: {drive}")
 
@@ -39,7 +39,7 @@ class PathType(pak.Type):
     def _pack(cls, value, *, ctx):
         value = value.absolute()
 
-        for drive, drive_path in ctx.command_handler.drives.items():
+        for drive, drive_path in ctx.drives.items():
             if drive_path in value.parents:
                 value    = value.relative_to(drive_path)
                 raw_path = f"{drive}:/{value}"
@@ -48,12 +48,17 @@ class PathType(pak.Type):
 
         raise ValueError(f"Path on no known drive: {value}")
 
-class GoldtreeContext(pak.PacketContext):
-    def __init__(self, command_handler):
-        self.command_handler = command_handler
-
 class GoldtreePacket(pak.Packet):
     MAGIC = None
+
+    class Context(pak.Packet.Context):
+        def __init__(self, drives):
+            self.drives = drives
+
+            super().__init__()
+
+        def __hash__(self):
+            return hash(tuple(self.drives.items()))
 
     class Header(pak.Packet.Header):
         magic: pak.RawByte[4]
@@ -278,7 +283,7 @@ class CommandProcessor(pak.PacketHandler):
         self.read_file.close()
         self.write_file.close()
 
-        self.ctx = GoldtreeContext(self)
+        self.ctx = GoldtreePacket.Context(self.drives)
 
     def recv_command(self):
         buf = io.BytesIO(self.usb.read(self.BLOCK_SIZE, timeout=None))
