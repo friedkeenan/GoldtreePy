@@ -60,6 +60,12 @@ class GoldtreePacket(pak.Packet):
         def __hash__(self):
             return hash(tuple(self.drives.items()))
 
+        def __eq__(self, other):
+            if not isinstance(other, GoldtreePacket.Context):
+                return NotImplemented
+
+            return self.drives == other.drives
+
     class Header(pak.Packet.Header):
         magic: pak.RawByte[4]
 
